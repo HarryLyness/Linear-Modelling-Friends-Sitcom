@@ -1,0 +1,343 @@
+---
+title: "Linear modelling on Friends TV Show data from Kraggle"
+author: "Harry Lyness"
+date: "18/07/2022"
+output:
+  html_document:
+    toc: true
+    theme: united
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Introduction
+
+This is a non-academic project I started because I was curious about applications of linear modelling. So I thought, why not apply linear modelling to my favorite show on Netflix, FRIENDS!
+
+# Loading In Packages and Data 
+
+Useful Packages for data analysis 
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(broom)
+library(patchwork)
+library(lubridate)
+library(gridExtra)
+library(effects)
+```
+
+Since we are going to be working with linear models, I have created a `diagnostic_plots()` function to output the diagnostic plots for any linear model in a grid. 
+
+```{r}
+diagnostic_plots = function(lmod)
+{
+  oldpar=par()
+  par(mfrow=c(2,2),mar=c(2.6,2.6,2.1,0.1),mgp=c(1.5,0.5,0))
+  plot(lmod)
+}
+```
+Data, which has been sourced from Kraggle (https://www.kaggle.com/datasets/rezaghari/friends-series-dataset). I have chosen to work with `friends_episodes_v3.csv` because `friends_episodes_v2.csv` had a missing episode and no 'episode number in season' variable. Both problems could have easily been fixed with the original data, but to save time and computations, I may as well use the set which has been cleaned better. 
+
+```{r, message=FALSE, warning=FALSE}
+friends = read_csv("friends_episodes_v3.csv")
+```
+
+Description of data,  
+
+* Year_of_prod: Year of production based on IMDB
+
+* Season: Season of the Friends TV show from 1 to 10 
+
+* \`EpisodeNumber\`: The episode number in the particular season
+
+* Episode_Title: The title of each episode in each season
+
+* Duration: Duration of each episode in minutes
+
+* Summary: Summary of the episode in a few lines
+
+* Director: Director of the specific episode
+
+* Stars: IMDB rating of the episode 
+
+* Votes: Total number of votes on IMDB by the date of publishing this data set
+
+Set up index variable for subsequent analysis, which is the number of each episode in time order from 1 to 236.  
+
+```{r}
+friends$index = seq_along(friends$Year_of_prod)
+```
+
+# Cleaning data 
+
+View our data set. Summary command is useful to spot any immediate problems with the data.
+
+```{r}
+view(friends)
+summary(friends)
+```
+We notice that `Director`, `Episode_Title` and `Summary`(episode plot) are in the incorrect format. The `Season` summary is not useful since we do not care about the mean of seasons... So, I changed the format of the 'Season' variable to show how many episodes are in each season. 
+
+```{r}
+friends$Director <- as.factor(friends$Director)
+friends$Season <- as.factor(friends$Season)
+friends$Episode_Title = as.factor(friends$Episode_Title)
+friends$Summary = as.factor(friends$Summary)
+summary(friends)
+```
+There seems to be no duplicate `Summary`'s, but there are duplicate episode titles. In order for this to not mess with my analysis, I shall rename the episodes. 
+
+```{r,include = FALSE}
+#this is not going in the report
+
+friends = read_csv("friends_episodes_v3.csv")
+
+```
+
+```{r}
+friends[217,4] = "The One in Barbados: Part 1"
+friends[218,4] = "The One in Barbados: Part 2"
+
+friends[136,4] = "The One That Could Have Been: Part 1"
+friends[137,4] = "The One That Could Have Been: Part 2"
+
+friends[96,4] = "The One with Ross's Wedding: Part 1"
+friends[97,4] = "The One with Ross's Wedding: Part 2"
+
+friends[145,4] = "The One with the Proposal: Part 1"
+friends[146,4] = "The One with the Proposal: Part 2"
+```
+```{r,include = FALSE}
+#this is not going in the report :)
+friends$Director <- as.factor(friends$Director)
+friends$Season <- as.factor(friends$Season)
+friends$Episode_Title = as.factor(friends$Episode_Title)
+friends$Summary = as.factor(friends$Summary)
+friends$index = seq_along(friends$Year_of_prod)
+```
+
+Checking for blank entries in data set. Since this is a small data frame, an easy way to check for `NA` values is to first sort each column; then, if there are `NA` values, they will be at the bottom of the data frame. I have included code which will calculate the number of `NA` values in each column of the `friends` data frame. This is a much more efficient way of completing the task. 
+
+```{r}
+cbind(
+   lapply(
+     lapply(friends, is.na)
+     , sum)
+   )
+```
+I conclude that there are no blank entries in the `friends` data frame. 
+
+# Initial Analysis
+
+Directors play a huge role in a TV Shows success. It would be a good idea to see the distribution of directors for Friends.
+
+```{r}
+BarDirector=friends %>% select(Director) %>% count(Director)
+ggplot(BarDirector, aes(x=Director, y=n)) + 
+  geom_bar(stat = "identity")+xlab("Director")+ylab("Number of episodes directed")+theme(axis.text.x = element_text(angle = 90)) + ggtitle("A graph to show how many episodes each person directed over all seasons") + theme(plot.title = element_text(hjust = 0.5))
+```
+There seems to be a fair scattering on who directed a large number of episodes. This implies that there is scope to see whether the choice in director made a difference in the rating of each episode. This shall be investigated. 
+
+```{r}
+xtabs( ~Director, friends)
+```
+
+Kevin Bright directed the most episodes. There may be scope to see if the episodes which he directed tend to have better star ratings. 
+
+Computing some facts about each season which could have interesting analysis. 
+
+```{r}
+# Defining variables needed for computations and new data frame 'SeasonInfo'
+SeasonEpisodeNumber = c(24,24,25,24,24,25,24,24,24,18)
+SeasonNumber=c(1,2,3,4,5,6,7,8,9,10)
+MeanStarsSeason = SeasonNumber
+MeanVotesSeason = SeasonNumber
+Total_Duration = SeasonNumber
+
+# Calculating the mean star rating and Votes of each season.
+for(i in (1:10)){
+  temp = friends %>% select(Stars,Season,Votes,Duration) %>% filter(Season == SeasonNumber[i])
+  MeanStarsSeason[i]=mean(temp$Stars)
+  MeanVotesSeason[i]=mean(temp$Votes)
+  Total_Duration[i]=mean(temp$Duration)*SeasonEpisodeNumber[i]
+}
+# Decimal Season numbers on the x-axis would not make sense
+SeasonNumber=as.character(SeasonNumber)
+
+# Creating 'SeasonInfo' data frame 
+SeasonInfo = data.frame(SeasonNumber,SeasonEpisodeNumber,MeanStarsSeason,MeanVotesSeason,Total_Duration)
+names(SeasonInfo)[1]='Season'
+names(SeasonInfo)[2]='Number_of_episodes_in_each_season'
+names(SeasonInfo)[3]='Mean_star_rating'
+names(SeasonInfo)[4]='Mean_Votes'
+SeasonInfo
+```
+
+Season 3 and season 6 contained the most episodes, with season 6 having the longest total duration. Season 10 had the highest average stars rating per episode. Season 1 had the highest mean votes per episode. 
+
+```{r}
+# Re-Ordering seasons so that bar chart is in logical order from first to last season
+SeasonInfo$Season = factor(SeasonInfo$Season, levels = c('1', '2', '3', '4', '5', '6', '7','8','9','10'))
+ggplot(SeasonInfo,aes(x=Season,y=Mean_star_rating)) + geom_bar(stat = "identity") + xlab("Season")  + ylab("Mean Star Rating")+ ggtitle("A graph to show the mean star rating of each season") + theme(plot.title = element_text(hjust = 0.5))
+```
+
+This is actually very interesting. We can see that the average star rating across all seasons are approximately the same . This would suggest that the star rating did not change significantly across all seasons. This is unusual for popular TV shows as normally the star ratings tend to decrease as the show continues. This is something which is worth investigating statistically.
+
+```{r}
+ggplot(SeasonInfo,aes(x=Season,y=Mean_Votes)) + geom_bar(stat = "identity") + xlab("Season")  + ylab("Mean votes per episode") + ggtitle("A graph to show the mean number of votes each season") + theme(plot.title = element_text(hjust = 0.5))
+```
+The number of votes decreasing suggests that as time went on less people where watching the show. However, the people who where watching the show were still enjoying it. Season 10 does not follow the trend. This could be due to some episodes having unusually high votes within that season.  
+```{r}
+Season10 = friends %>% filter(Season == 10)
+ggplot(Season10,aes(x=`Episode Number`,y=Votes)) + geom_bar(stat = "identity") + xlab("Episode")  + ylab("Votes") + ggtitle("A graph to show the number of votes per episode in season 10") + theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r,include=FALSE}
+######
+#not included in report
+#ggplot(friends,aes(x=index,y=Votes)) + geom_bar(stat = "identity") + xlab("Episode")  + ylab("Votes") + ggtitle("A graph to show the number of votes per episode in season 10") + theme(plot.title = element_text(hjust = 0.5))
+#####
+```
+
+The first 16 episodes of the season seem to follow the trend, looking at the mean number of votes for previous seasons. The last two episodes seem to have an unusually large number of votes. Lets see if these episodes are also have a high star rating. 
+
+```{r}
+orderF = friends %>% select(Season,Episode_Title,Stars,Votes)
+orderF[order(-orderF$Stars), ]
+```
+The last 2 episodes of season 10 do indeed have a large number of votes and a very high star rating. It would be interesting to investigate this further. Personally, my favourite episode is 'The One Where Everybody Finds Out', so I am not surprised it has the highest star rating... It is an amazing episode!
+
+# Did the stars change significantly over time? 
+
+```{r}
+ggplot(friends, aes(x = index, y = Stars)) + geom_point() + geom_smooth()
+```
+
+This suggests that the ratings have in general improved over time. We can fit a purely linear model, since a linear model would fit in between the confidence bands. 
+
+```{r}
+lmod = lm(Stars ~ index, friends)
+summary(lmod)
+```
+The index is not significant, therefore we can conclude that the episode stars stayed approximately the same over all 10 seasons. However, there may be scope to investigate whether the episode stars changed significantly within each season
+
+# Did the stars of each episode change within each season?
+
+Start by plotting the episode stars within each season
+
+```{r}
+ggplot(friends, aes(x=`Episode Number`,y=Stars)) + geom_point() + geom_smooth(method="lm")+facet_wrap(~ Season)
+```
+As expected from the result above, there is not a huge difference in stars across the seasons. This is because all the episodes are still approximately 8-9 stars region. This implies that there are not significant differences between each season. There are no consistent changes between the ratings of each season, expect for possibly season 10.
+
+```{r}
+lmod = lm(Stars ~ factor(Season)*`Episode Number`, friends)
+anova(lmod)
+```
+The test concludes that there is no significant interaction. This means that trends cannot be distinguished between seasons. The anova function also determines whether the episode makes a difference. This is because the anova function compares pairs of models in a sequence. Since the p-value of the `Episode Number`, 0.59565, is not significant, the episode is not significant. I conclude that there is no evidence that the episode stars of friends varied with a consistent pattern within a season.
+
+
+
+# Did any of the major directors have a significant impact on the ratings?
+
+I have decided to classify a major director by having directed at least 10 episodes. Creating an indicator variable for each director.
+
+```{r}
+friends %>% mutate(Ben_Weiss = as.numeric(grepl("Ben Weiss",Director))) -> friends
+friends %>% mutate(David_Schwimmer = as.numeric(grepl("David Schwimmer",Director))) -> friends
+friends %>% mutate(Gail_Mancuso = as.numeric(grepl("Gail Mancuso",Director))) -> friends
+friends %>% mutate(Gary_Halvorson = as.numeric(grepl("Gary Halvorson",Director))) -> friends
+friends %>% mutate(James_Burrows= as.numeric(grepl("James Burrows",Director))) -> friends
+friends %>% mutate(Kevin_Bright= as.numeric(grepl("Kevin Bright",Director))) -> friends
+friends %>% mutate(Michael_Lembeck= as.numeric(grepl("Michael Lembeck",Director))) -> friends
+friends %>% mutate(Peter_Bonerz= as.numeric(grepl("Peter Bonerz",Director))) -> friends
+
+```
+
+It could be a good idea to include a `Season` factor in the linear model, since if there was a general episode stars decline or increase over time, the `Season` variable would account for that. However, I discussed above that the episode ratings did not change significantly over time. This means that I shall use a simple linear model without the `Season` factor.
+
+```{r}
+Director_Indicator = friends %>% select(Stars, Ben_Weiss, David_Schwimmer,Gail_Mancuso,Gary_Halvorson,James_Burrows,Kevin_Bright,Michael_Lembeck,Peter_Bonerz) %>% pivot_longer(!Stars, names_to = "variable", values_to = "value")
+Director_Indicator %>% split(.$variable) %>% map(~ lm(Stars ~ value, data = .)) %>% map_dfr(~ tidy(.)[2,],.id="Predictor")
+```
+It is clear that `Kevin_Bright` had a significant positive impact on the ratings of the show. Kevin Bright is one of the leading producers of Friends, and is a experienced director. This conclusion is valid in wider context. 
+
+```{r,echo=FALSE, include = FALSE}
+
+# Run this chunk for same test but with `Season` factor if you are interested
+
+linmod1 = lm(Stars ~ factor(Season) + Ben_Weiss, friends)
+linmod2 = lm(Stars ~ factor(Season) + David_Schwimmer, friends)
+linmod3 = lm(Stars ~ factor(Season) + Gail_Mancuso, friends)
+linmod4 = lm(Stars ~ factor(Season) + Gary_Halvorson , friends)
+linmod5 = lm(Stars ~ factor(Season) + James_Burrows, friends)
+linmod6 = lm(Stars ~ factor(Season) + Kevin_Bright, friends)
+linmod7 = lm(Stars ~ factor(Season) + Michael_Lembeck, friends)
+linmod8 = lm(Stars ~ factor(Season) + Peter_Bonerz, friends)
+
+faraway::sumary(linmod1)
+faraway::sumary(linmod2)
+faraway::sumary(linmod3)
+faraway::sumary(linmod4)
+faraway::sumary(linmod5)
+faraway::sumary(linmod6)
+faraway::sumary(linmod7)
+faraway::sumary(linmod8)
+
+```
+
+# Are there any particulary well/low performing episodes?
+
+We are looking for an episode which stands out (outlier). The best thing to find this episode is to create a model with `Stars` as the response and `Season` as the only predictor. We can use the diagnostic plots to scout any possible outliers.
+
+```{r}
+lmod = lm(Stars ~ Season, friends)
+diagnostic_plots(lmod)
+```
+Looking at the Normal Q-Q, there are a few points which stray from the line towards the upper and lower tail. However, they seem to have standardized residuals of less than 3.5 in absolute value. Since the Bonferroni Criterion tends to be more conservative than the nominal level approach, we expect to find no outliers. This is how you would apply the Bonferroni Criterion to find outliers, if they exist.
+
+```{r}
+#produces an array of TRUE/FALSE values on whether standerised residuals are higher or lower than Bonferroni Criterion
+TrueFalseArray=(abs(rstudent(lmod)) > abs(qt(.05/((nrow(friends))*2) ,lmod$df.residual-1)))
+#calculates the number of outliers 
+sum(TrueFalseArray, na.rm = TRUE)
+```
+I conclude that there are no particularly well or low performing episodes at 5\% significance level. 
+
+# Are there any episodes with an unusual ammount of votes?
+
+The analysis and reasoning for this question is simular to the previous question. I am also going to apply the Bonferroni Criterion here to find outliers 
+
+```{r}
+lmod = lm(Votes ~ Season, friends)
+friends$Episode_Title[abs(rstudent(lmod)) > abs(qt(.05/((nrow(friends))*2) ,lmod$df.residual-1))]
+```
+There are 3 episodes with an unusual number of votes,
+
+* The One Where Monica Gets a Roommate: The Pilot
+
+* The One Where Everybody Finds Out 
+
+* The Last One: Part 2 
+
+Unsurprisingly, these are the three episodes with the largest number of votes in the entire series. 'The One Where Monica Gets a Roommate: The Pilot' is the first episode of season 1, and 'The Last One: Part 2' is the last episode of season 10. You would expect these episodes to have a large number of votes. 'The One Where Everybody Finds Out' has a very good plot and the highest rated episode of the series, so you would also expect this episode to have a large number of votes. There are no episodes with an unusually small number of votes.
+
+# Summary and findings 
+
+This project was actually very interesting. Friends had extraordinarily positive ratings throughout it's lifetime, which is very impressive considering many shows/sitcoms tend to peak and then drop off, such as The Big Bang Theory. Kevin Bright had a significant positive impact on the rating of each episode. There were a few episodes which had an extraordinary high number of votes. But there were no episodes which had a significantly high rating. The average rating for each season was 8-9 stars, with some episodes being rated 9.7. This is very high for IMDB!
+
+It would be cool to explore a prediction type question, for example predicting the average star rating for a season 11, if it was produced. But a prediction test on this data would be difficult since the plot and synopsis of the show changes so much after the last episode of season 10. So the plots and the dynamic would be very different. There was a Joey based spin off show, but it was cancelled after star ratings plummeted. 
+
+
+
+
+
+
+
+
+
+
+
+
